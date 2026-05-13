@@ -33,6 +33,7 @@ import {
   X,
 } from 'lucide-react';
 import type { Concept, ImageAttachment, ReviewBucket } from './lib/types';
+import { forgotPasswordCentral, loginCentral, signupCentral } from './lib/auth';
 import { APPS_SCRIPT, getUrl, ping as pingSheets } from './lib/sheets';
 import { ageInDays, daysAgo, prettyDate, toInputDate, today } from './lib/dates';
 import { demoData } from './lib/demo';
@@ -709,6 +710,7 @@ function SettingsPage({ backend, syncing, error, onBack, onSync, onSetup, onDisc
           </div>
           <p className="mt-4 text-xs text-gray-400">When connected, the app auto-syncs every 5 seconds.</p>
           <button onClick={() => { localStorage.removeItem(AUTH_SESSION_KEY); window.location.reload(); }} className="mt-4 w-full rounded-2xl bg-slate-900 px-5 py-3 text-sm font-bold text-white hover:bg-slate-800">Log out</button>
+          <button onClick={() => { localStorage.removeItem(AUTH_SESSION_KEY); localStorage.removeItem(AUTH_SHEET_KEY); window.location.reload(); }} className="mt-2 w-full rounded-2xl bg-gray-100 px-5 py-3 text-sm font-bold text-gray-700 hover:bg-gray-200">Log out and forget sheet URL</button>
         </div>
       </main>
     </div>
@@ -725,47 +727,62 @@ function SetupPage({ onBack, onConnect }: { onBack: () => void; onConnect: (url:
   return <div className="min-h-screen bg-gradient-to-br from-slate-50 via-white to-indigo-50"><header className="border-b border-gray-200 bg-white"><div className="mx-auto flex max-w-4xl items-center gap-3 px-4 py-3"><button onClick={onBack} className="rounded-xl p-2 hover:bg-gray-100"><ArrowLeft className="h-5 w-5" /></button><h1 className="font-extrabold text-gray-800">Google Sheets Setup</h1></div></header><main className="mx-auto max-w-4xl space-y-4 px-4 py-6"><div className="rounded-3xl bg-white p-5 shadow-sm"><h2 className="font-bold text-gray-800">1. Paste this in Apps Script</h2><p className="mt-1 text-sm text-gray-500">Google Sheet → Extensions → Apps Script → delete old code → paste below → save.</p><button onClick={copy} className="mt-4 flex w-full items-center justify-center gap-2 rounded-2xl bg-gray-900 px-5 py-3 text-sm font-bold text-white"><Clipboard className="h-4 w-4" />{copied ? 'Copied!' : 'Copy Code.gs'}</button><pre className="mt-3 max-h-72 overflow-auto rounded-2xl bg-gray-950 p-4 text-xs text-gray-200">{APPS_SCRIPT}</pre></div><div className="rounded-3xl bg-white p-5 shadow-sm"><h2 className="font-bold text-gray-800">2. Deploy and paste URL</h2><p className="mt-1 text-sm text-gray-500">Deploy → New deployment → Web app → Who has access: Anyone.</p><input value={url} onChange={event => { setUrl(event.target.value); setOk(null); }} placeholder="https://script.google.com/macros/s/.../exec" className="mt-4 w-full rounded-2xl border border-gray-200 bg-gray-50 px-4 py-3 text-sm outline-none focus:ring-2 focus:ring-indigo-500" /><div className="mt-3 flex gap-2"><button onClick={test} disabled={!url.trim() || testing} className="flex-1 rounded-2xl bg-gray-100 px-5 py-3 text-sm font-bold text-gray-700 hover:bg-gray-200 disabled:text-gray-300">{testing ? 'Testing...' : 'Test'}</button><button onClick={() => onConnect(url.trim())} disabled={!url.trim() || ok !== true} className="flex-1 rounded-2xl bg-green-600 px-5 py-3 text-sm font-bold text-white hover:bg-green-700 disabled:bg-gray-300">Connect</button></div>{ok === true && <p className="mt-3 text-sm font-bold text-green-600">Connected successfully.</p>}{ok === false && <p className="mt-3 text-sm font-bold text-red-600">Connection failed. Check deployment access.</p>}</div></main></div>;
 }
 
-type AuthAccount = { username: string; password: string; sheetUrl: string };
-const AUTH_USERS_KEY = 'spacedmind-auth-users';
 const AUTH_SESSION_KEY = 'spacedmind-auth-session';
+const AUTH_SHEET_KEY = 'spacedmind-auth-sheet-url';
 
-function loadAccounts(): AuthAccount[] {
-  try { return JSON.parse(localStorage.getItem(AUTH_USERS_KEY) || '[]') as AuthAccount[]; }
-  catch { return []; }
-}
-
-function saveAccounts(accounts: AuthAccount[]) {
-  localStorage.setItem(AUTH_USERS_KEY, JSON.stringify(accounts));
-}
-
-function AuthPage({ onAuthenticated }: { onAuthenticated: (sheetUrl: string) => Promise<void> }) {
-  const [mode, setMode] = useState<'login' | 'signup'>('login');
+function AuthPage({ onAuthenticated }: { onAuthenticated: (sheetUrl: string, username: string) => Promise<void> }) {
+  const [mode, setMode] = useState<'login' | 'signup' | 'forgot'>('login');
   const [username, setUsername] = useState('');
+  const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
-  const [sheetUrl, setSheetUrl] = useState('');
+  const [sheetUrl, setSheetUrl] = useState(() => localStorage.getItem(AUTH_SHEET_KEY) || '');
   const [error, setError] = useState('');
   const [busy, setBusy] = useState(false);
+  const [showUrlHelp, setShowUrlHelp] = useState(false);
+  const [scriptCopied, setScriptCopied] = useState(false);
+  const [testingUrl, setTestingUrl] = useState(false);
+  const [urlOk, setUrlOk] = useState<boolean | null>(null);
+
+  const copySignupScript = async () => {
+    await navigator.clipboard.writeText(APPS_SCRIPT);
+    setScriptCopied(true);
+    setTimeout(() => setScriptCopied(false), 1500);
+  };
+
+  const testSignupUrl = async () => {
+    if (!sheetUrl.trim().startsWith('https://script.google.com/')) {
+      setError('Paste your deployed Web App URL first.');
+      return;
+    }
+    setTestingUrl(true);
+    localStorage.setItem('spacedmind-script-url', sheetUrl.trim());
+    setUrlOk(await pingSheets());
+    setTestingUrl(false);
+  };
 
   const submit = async (event: React.FormEvent) => {
     event.preventDefault();
     setError('');
-    if (!username.trim() || !password.trim()) return setError('Enter username and password.');
-    const accounts = loadAccounts();
     setBusy(true);
     try {
+      let resolvedSheetUrl = sheetUrl.trim();
       if (mode === 'signup') {
-        if (!sheetUrl.trim().startsWith('https://script.google.com/')) throw new Error('Enter your Google Apps Script Web App URL.');
-        if (accounts.some(account => account.username === username.trim())) throw new Error('Username already exists. Please log in.');
-        const account = { username: username.trim(), password, sheetUrl: sheetUrl.trim() };
-        saveAccounts([...accounts, account]);
-        localStorage.setItem(AUTH_SESSION_KEY, account.username);
-        await onAuthenticated(account.sheetUrl);
+        if (!sheetUrl.trim().startsWith('https://script.google.com/')) throw new Error('Enter your Google Sheets Web App URL during signup.');
+        if (!username.trim() || !password.trim() || !email.trim()) return setError('Enter username, email, and password.');
+        await signupCentral(username.trim(), password, email.trim(), sheetUrl.trim());
+      } else if (mode === 'forgot') {
+        if (!username.trim() || !email.trim()) return setError('Enter username and email.');
+        await forgotPasswordCentral(username.trim(), email.trim());
+        setError('Temporary password sent to your email.');
+        return;
       } else {
-        const account = accounts.find(item => item.username === username.trim() && item.password === password);
-        if (!account) throw new Error('Invalid username or password.');
-        localStorage.setItem(AUTH_SESSION_KEY, account.username);
-        await onAuthenticated(account.sheetUrl);
+        if (!username.trim() || !password.trim()) return setError('Enter username and password.');
+        resolvedSheetUrl = await loginCentral(username.trim(), password);
+        setSheetUrl(resolvedSheetUrl);
       }
+      localStorage.setItem(AUTH_SESSION_KEY, username.trim());
+      localStorage.setItem(AUTH_SHEET_KEY, resolvedSheetUrl);
+      await onAuthenticated(resolvedSheetUrl, username.trim());
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Authentication failed.');
     } finally {
@@ -775,21 +792,51 @@ function AuthPage({ onAuthenticated }: { onAuthenticated: (sheetUrl: string) => 
 
   return (
     <div className="flex min-h-screen items-center justify-center bg-gradient-to-br from-slate-50 via-white to-indigo-50 p-4">
-      <div className="w-full max-w-md rounded-[2rem] border border-indigo-100 bg-white p-6 shadow-xl shadow-indigo-100/60">
+      <div className="w-full max-w-3xl rounded-[2rem] border border-indigo-100 bg-white p-6 shadow-xl shadow-indigo-100/60">
         <div className="mb-6 text-center">
           <div className="mx-auto mb-3 flex h-14 w-14 items-center justify-center rounded-2xl bg-gradient-to-br from-indigo-600 to-violet-600 text-white"><Brain className="h-7 w-7" /></div>
           <h1 className="text-2xl font-extrabold text-gray-900">SpacedMind</h1>
-          <p className="text-sm text-gray-500">{mode === 'signup' ? 'Create access for your Google Sheet' : 'Log in to continue'}</p>
+          <p className="text-sm text-gray-500">{mode === 'signup' ? 'Create access for your Google Sheet' : mode === 'forgot' ? 'Recover your password' : 'Log in to continue'}</p>
         </div>
         <form onSubmit={submit} className="space-y-3">
           <input value={username} onChange={event => setUsername(event.target.value)} placeholder="Username" className="w-full rounded-2xl border border-gray-200 bg-gray-50 px-4 py-3 text-sm outline-none focus:ring-2 focus:ring-indigo-500" />
-          <input type="password" value={password} onChange={event => setPassword(event.target.value)} placeholder="Password" className="w-full rounded-2xl border border-gray-200 bg-gray-50 px-4 py-3 text-sm outline-none focus:ring-2 focus:ring-indigo-500" />
-          {mode === 'signup' && <input value={sheetUrl} onChange={event => setSheetUrl(event.target.value)} placeholder="Google Sheets Web App URL" className="w-full rounded-2xl border border-gray-200 bg-gray-50 px-4 py-3 text-sm outline-none focus:ring-2 focus:ring-indigo-500" />}
+          {(mode === 'signup' || mode === 'forgot') && <input type="email" value={email} onChange={event => setEmail(event.target.value)} placeholder="Email" className="w-full rounded-2xl border border-gray-200 bg-gray-50 px-4 py-3 text-sm outline-none focus:ring-2 focus:ring-indigo-500" />}
+          {mode !== 'forgot' && <input type="password" value={password} onChange={event => setPassword(event.target.value)} placeholder="Password" className="w-full rounded-2xl border border-gray-200 bg-gray-50 px-4 py-3 text-sm outline-none focus:ring-2 focus:ring-indigo-500" />}
+          {mode === 'signup' && (
+            <>
+              <button type="button" onClick={() => setShowUrlHelp(!showUrlHelp)} className="w-full rounded-2xl border border-amber-200 bg-amber-50 px-4 py-3 text-left text-sm font-bold text-amber-800 hover:bg-amber-100">
+                {showUrlHelp ? 'Hide' : 'Show'} how to get Web App URL
+              </button>
+              {showUrlHelp && (
+                <div className="space-y-4 rounded-2xl border border-gray-200 bg-gray-50 p-4">
+                  <div>
+                    <h3 className="text-sm font-extrabold text-gray-800">1. Paste this in Apps Script</h3>
+                    <p className="mt-1 text-xs text-gray-500">Google Sheet → Extensions → Apps Script → delete old code → paste below → save.</p>
+                    <button type="button" onClick={copySignupScript} className="mt-3 flex w-full items-center justify-center gap-2 rounded-2xl bg-gray-900 px-5 py-3 text-sm font-bold text-white">
+                      <Clipboard className="h-4 w-4" />{scriptCopied ? 'Copied!' : 'Copy Code.gs'}
+                    </button>
+                    <pre className="mt-3 max-h-72 overflow-auto rounded-2xl bg-gray-950 p-4 text-xs text-gray-200">{APPS_SCRIPT}</pre>
+                  </div>
+                  <div>
+                    <h3 className="text-sm font-extrabold text-gray-800">2. Deploy and paste URL</h3>
+                    <p className="mt-1 text-xs text-gray-500">Deploy → New deployment → Web app → Who has access: Anyone.</p>
+                  </div>
+                </div>
+              )}
+              <input value={sheetUrl} onChange={event => { setSheetUrl(event.target.value); setUrlOk(null); }} placeholder="https://script.google.com/macros/s/.../exec" className="w-full rounded-2xl border border-gray-200 bg-gray-50 px-4 py-3 text-sm outline-none focus:ring-2 focus:ring-indigo-500" />
+              <div className="flex gap-2">
+                <button type="button" onClick={testSignupUrl} disabled={!sheetUrl.trim() || testingUrl} className="flex-1 rounded-2xl bg-gray-100 px-5 py-3 text-sm font-bold text-gray-700 hover:bg-gray-200 disabled:text-gray-300">{testingUrl ? 'Testing...' : 'Test URL'}</button>
+                {urlOk === true && <span className="flex flex-1 items-center justify-center rounded-2xl bg-green-50 px-5 py-3 text-sm font-bold text-green-700">Connected</span>}
+                {urlOk === false && <span className="flex flex-1 items-center justify-center rounded-2xl bg-red-50 px-5 py-3 text-sm font-bold text-red-600">Failed</span>}
+              </div>
+            </>
+          )}
           {error && <p className="rounded-2xl bg-red-50 p-3 text-sm font-semibold text-red-600">{error}</p>}
-          <button disabled={busy} className="w-full rounded-2xl bg-indigo-600 px-5 py-3 text-sm font-extrabold text-white hover:bg-indigo-700 disabled:bg-gray-300">{busy ? 'Please wait...' : mode === 'signup' ? 'Sign Up' : 'Log In'}</button>
+          <button disabled={busy} className="w-full rounded-2xl bg-indigo-600 px-5 py-3 text-sm font-extrabold text-white hover:bg-indigo-700 disabled:bg-gray-300">{busy ? 'Please wait...' : mode === 'signup' ? 'Sign Up' : mode === 'forgot' ? 'Send temporary password' : 'Log In'}</button>
         </form>
         <button onClick={() => { setMode(mode === 'signup' ? 'login' : 'signup'); setError(''); }} className="mt-4 w-full text-sm font-bold text-indigo-600 hover:text-indigo-800">{mode === 'signup' ? 'Already have access? Log in' : 'New user? Sign up'}</button>
-        <p className="mt-4 text-center text-xs text-gray-400">This is local browser access control. Keep your device secure.</p>
+        <button onClick={() => { setMode(mode === 'forgot' ? 'login' : 'forgot'); setError(''); }} className="mt-2 w-full text-sm font-bold text-gray-500 hover:text-indigo-700">{mode === 'forgot' ? 'Back to login' : 'Forgot password?'}</button>
+        <p className="mt-4 text-center text-xs text-gray-400">After signup, this device remembers your Sheet URL. On a brand-new device, enter the same URL once to locate your backend.</p>
       </div>
     </div>
   );
@@ -799,10 +846,11 @@ export default function App() {
   const store = useConceptStore();
   const [page, setPage] = useState<Page>('dashboard');
   const [authenticated, setAuthenticated] = useState(() => Boolean(localStorage.getItem(AUTH_SESSION_KEY)));
+  const [currentUser, setCurrentUser] = useState(() => localStorage.getItem(AUTH_SESSION_KEY) || '');
   const pending = store.items.filter(item => ['day3', 'day7'].includes(bucketOf(item))).length;
 
   if (!authenticated) {
-    return <AuthPage onAuthenticated={async sheetUrl => { await store.connectSheets(sheetUrl); setAuthenticated(true); }} />;
+    return <AuthPage onAuthenticated={async (sheetUrl, username) => { await store.connectSheets(sheetUrl); setCurrentUser(username); setAuthenticated(true); }} />;
   }
 
   if (store.loading) return <div className="flex min-h-screen items-center justify-center bg-slate-50"><Loader2 className="h-8 w-8 animate-spin text-indigo-600" /></div>;
@@ -810,5 +858,5 @@ export default function App() {
   if (page === 'settings') return <SettingsPage backend={store.backend} syncing={store.syncing} error={store.error} onBack={() => setPage('dashboard')} onSync={store.sync} onSetup={() => setPage('setup')} onDisconnect={store.disconnectSheets} />;
   if (page === 'setup') return <SetupPage onBack={() => setPage('settings')} onConnect={async url => { await store.connectSheets(url); setPage('dashboard'); }} />;
 
-  return <div className="min-h-screen bg-gradient-to-br from-slate-50 via-white to-indigo-50"><header className="sticky top-0 z-30 border-b border-gray-200 bg-white/90 backdrop-blur"><div className="mx-auto flex h-16 max-w-7xl items-center justify-between px-4 sm:px-6 lg:px-8"><div className="flex items-center gap-3"><div className="rounded-2xl bg-gradient-to-br from-indigo-600 to-violet-600 p-2 text-white shadow-lg shadow-indigo-200"><Brain className="h-6 w-6" /></div><div><h1 className="text-xl font-extrabold text-gray-900">SpacedMind</h1><p className="hidden text-xs text-gray-400 sm:block">Spaced repetition study planner</p></div></div><div className="flex items-center gap-2"><Pill tone={store.backend === 'sheets' ? 'green' : 'gray'}>{store.backend === 'sheets' ? <Cloud className="mr-1 h-3 w-3" /> : <HardDrive className="mr-1 h-3 w-3" />}{store.backend === 'sheets' ? 'Synced' : 'Local'}</Pill>{pending > 0 && <Pill tone="amber">{pending} due</Pill>}<button onClick={() => setPage('library')} className="flex items-center gap-1.5 rounded-full border border-indigo-100 bg-indigo-50 px-3 py-1.5 text-xs font-bold text-indigo-700 hover:bg-indigo-100"><GraduationCap className="h-4 w-4" />{store.items.length}</button><button onClick={() => setPage('settings')} className="rounded-full p-2 hover:bg-gray-100"><Settings className="h-5 w-5 text-gray-500" /></button></div></div></header><section className="mx-auto max-w-7xl px-4 pb-5 pt-8 text-center sm:px-6 lg:px-8"><h2 className="text-3xl font-extrabold text-gray-900">Capture once. Review at the right time.</h2><p className="mx-auto mt-2 max-w-2xl text-sm text-gray-500">Backdate concepts, edit dates safely, and keep everything synced with Google Sheets.</p>{store.items.length === 0 && <button onClick={() => store.replaceAll(demoData())} className="mt-5 rounded-2xl bg-indigo-600 px-5 py-3 text-sm font-bold text-white shadow-lg shadow-indigo-200 hover:bg-indigo-700">Load Demo Data</button>}</section><ProgressDashboard items={store.items} /><main className="mx-auto grid max-w-7xl grid-cols-1 gap-5 px-4 pb-16 sm:px-6 lg:grid-cols-3 lg:px-8"><AddPanel items={store.items} add={store.add} edit={store.edit} remove={store.remove} /><ReviewPanel items={store.items} markReview={store.markReview} /><ProgressPanel items={store.items} clear={store.clear} /></main></div>;
+  return <div className="min-h-screen bg-gradient-to-br from-slate-50 via-white to-indigo-50"><header className="sticky top-0 z-30 border-b border-gray-200 bg-white/90 backdrop-blur"><div className="mx-auto flex h-16 max-w-7xl items-center justify-between px-4 sm:px-6 lg:px-8"><div className="flex items-center gap-3"><div className="rounded-2xl bg-gradient-to-br from-indigo-600 to-violet-600 p-2 text-white shadow-lg shadow-indigo-200"><Brain className="h-6 w-6" /></div><div><h1 className="text-xl font-extrabold text-gray-900">SpacedMind</h1><p className="hidden text-xs text-gray-400 sm:block">Spaced repetition study planner</p></div></div><div className="flex items-center gap-2"><span className="hidden rounded-full border border-indigo-100 bg-indigo-50 px-3 py-1.5 text-xs font-bold text-indigo-700 sm:inline-flex">Hi, {currentUser}</span><Pill tone={store.backend === 'sheets' ? 'green' : 'gray'}>{store.backend === 'sheets' ? <Cloud className="mr-1 h-3 w-3" /> : <HardDrive className="mr-1 h-3 w-3" />}{store.backend === 'sheets' ? 'Synced' : 'Local'}</Pill>{pending > 0 && <Pill tone="amber">{pending} due</Pill>}<button onClick={() => setPage('library')} className="flex items-center gap-1.5 rounded-full border border-indigo-100 bg-indigo-50 px-3 py-1.5 text-xs font-bold text-indigo-700 hover:bg-indigo-100"><GraduationCap className="h-4 w-4" />{store.items.length}</button><button onClick={() => setPage('settings')} className="rounded-full p-2 hover:bg-gray-100"><Settings className="h-5 w-5 text-gray-500" /></button></div></div></header><section className="mx-auto max-w-7xl px-4 pb-5 pt-8 text-center sm:px-6 lg:px-8"><h2 className="text-3xl font-extrabold text-gray-900">Capture once. Review at the right time.</h2><p className="mx-auto mt-2 max-w-2xl text-sm text-gray-500">Backdate concepts, edit dates safely, and keep everything synced with Google Sheets.</p>{store.items.length === 0 && <button onClick={() => store.replaceAll(demoData())} className="mt-5 rounded-2xl bg-indigo-600 px-5 py-3 text-sm font-bold text-white shadow-lg shadow-indigo-200 hover:bg-indigo-700">Load Demo Data</button>}</section><ProgressDashboard items={store.items} /><main className="mx-auto grid max-w-7xl grid-cols-1 gap-5 px-4 pb-16 sm:px-6 lg:grid-cols-3 lg:px-8"><AddPanel items={store.items} add={store.add} edit={store.edit} remove={store.remove} /><ReviewPanel items={store.items} markReview={store.markReview} /><ProgressPanel items={store.items} clear={store.clear} /></main></div>;
 }

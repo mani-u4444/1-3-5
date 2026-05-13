@@ -18,8 +18,7 @@ async function request(url: string, init: RequestInit) {
   }
 }
 
-async function post(payload: Record<string, unknown>) {
-  const url = getUrl();
+async function postTo(url: string, payload: Record<string, unknown>) {
   if (!url) throw new Error('Google Sheets is not configured');
   const response = await request(url, {
     method: 'POST',
@@ -31,6 +30,22 @@ async function post(payload: Record<string, unknown>) {
     const parsed = JSON.parse(text);
     if (parsed.status !== 'success') throw new Error(parsed.message || 'Google Sheets request failed');
   }
+}
+
+async function post(payload: Record<string, unknown>) {
+  return postTo(getUrl(), payload);
+}
+
+export async function signupUser(url: string, username: string, password: string, email: string) {
+  await postTo(url.trim(), { action: 'signup', username, password, email });
+}
+
+export async function loginUser(url: string, username: string, password: string) {
+  await postTo(url.trim(), { action: 'login', username, password });
+}
+
+export async function forgotPassword(url: string, username: string, email: string) {
+  await postTo(url.trim(), { action: 'forgotPassword', username, email });
 }
 
 export async function ping() {
@@ -82,12 +97,14 @@ export function editOne(
   return post({ action: 'edit', id, title, notes, images, dateAdded, reviewedDay3, reviewedDay7 });
 }
 
-export const APPS_SCRIPT = `// SpacedMind Google Sheets Backend v6
+export const APPS_SCRIPT = `// SpacedMind Google Sheets Backend v8
 // Concepts: id | title | notes | imageCount | dateAdded | reviewedDay3 | reviewedDay7
 // Images are stored as chunked rows in the SpacedMindImages tab.
+// Users are stored in the SpacedMindUsers tab: username | passwordHash | email | createdAt
 
 var SHEET = "SpacedMind";
 var IMAGE_SHEET = "SpacedMindImages";
+var USER_SHEET = "SpacedMindUsers";
 var CHUNK_SIZE = 45000;
 
 function sheet() {
@@ -114,6 +131,39 @@ function imageSheet() {
     s.setColumnWidth(5, 420);
   }
   return s;
+}
+
+function userSheet() {
+  var ss = SpreadsheetApp.getActiveSpreadsheet();
+  var s = ss.getSheetByName(USER_SHEET);
+  if (!s) {
+    s = ss.insertSheet(USER_SHEET);
+    s.getRange(1,1,1,4).setValues([["username","passwordHash","email","createdAt"]]);
+    s.getRange(1,1,1,4).setFontWeight("bold");
+    s.setFrozenRows(1);
+  } else {
+    var headers = s.getRange(1,1,1,Math.max(4, s.getLastColumn())).getValues()[0];
+    if (headers[2] !== "email") {
+      s.insertColumnAfter(2);
+      s.getRange(1,3).setValue("email");
+      s.getRange(1,4).setValue("createdAt");
+    }
+  }
+  return s;
+}
+
+function hashPassword(password) {
+  var bytes = Utilities.computeDigest(Utilities.DigestAlgorithm.SHA_256, String(password));
+  return bytes.map(function(byte) {
+    var value = (byte + 256) % 256;
+    return ("0" + value.toString(16)).slice(-2);
+  }).join("");
+}
+
+function findUserRow(s, username) {
+  var data = s.getDataRange().getValues();
+  for (var i = 1; i < data.length; i++) if (String(data[i][0]) === String(username)) return i + 1;
+  return -1;
 }
 
 function findRow(s, id) {
@@ -205,6 +255,44 @@ function doPost(e) {
   try {
     var p = JSON.parse(e.postData.contents);
     var s = sheet();
+
+    if (p.action === "signup") {
+      var us = userSheet();
+      var username = String(p.username || "").trim();
+      var password = String(p.password || "");
+      var email = String(p.email || "").trim().toLowerCase();
+      if (!username || !password) return ok({status:"error", message:"Username and password are required"});
+      if (!email) return ok({status:"error", message:"Email is required"});
+      if (findUserRow(us, username) > 0) return ok({status:"error", message:"Username already exists"});
+      us.appendRow([username, hashPassword(password), email, new Date().toISOString()]);
+      return ok({status:"success"});
+    }
+
+    if (p.action === "login") {
+      var us2 = userSheet();
+      var username2 = String(p.username || "").trim();
+      var password2 = String(p.password || "");
+      var row = findUserRow(us2, username2);
+      if (row <= 0) return ok({status:"error", message:"Invalid username or password"});
+      var storedHash = String(us2.getRange(row, 2).getValue());
+      if (storedHash !== hashPassword(password2)) return ok({status:"error", message:"Invalid username or password"});
+      return ok({status:"success"});
+    }
+
+    if (p.action === "forgotPassword") {
+      var us3 = userSheet();
+      var username3 = String(p.username || "").trim();
+      var email3 = String(p.email || "").trim().toLowerCase();
+      var row3 = findUserRow(us3, username3);
+      if (row3 <= 0) return ok({status:"error", message:"No matching user found"});
+      var storedEmail = String(us3.getRange(row3, 3).getValue()).trim().toLowerCase();
+      if (storedEmail !== email3) return ok({status:"error", message:"Email does not match this username"});
+      var tempPassword = Utilities.getUuid().slice(0, 8);
+      us3.getRange(row3, 2).setValue(hashPassword(tempPassword));
+      MailApp.sendEmail(email3, "SpacedMind temporary password", "Your temporary SpacedMind password is: " + tempPassword + "\n\nPlease log in and keep it safe.");
+      return ok({status:"success"});
+    }
+
     if (p.action === "add") {
       var imageCount = replaceImages(p.id, p.images);
       s.appendRow([String(p.id), String(p.title || ""), String(p.notes || ""), imageCount, String(p.dateAdded || ""), p.reviewedDay3 ? true : false, p.reviewedDay7 ? true : false]);

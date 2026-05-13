@@ -1,25 +1,33 @@
-// SpacedMind Google Sheets Backend v5
-// Columns: id | title | notes | images | dateAdded | reviewedDay3 | reviewedDay7
+// SpacedMind Google Sheets Backend v6
+// Concepts: id | title | notes | imageCount | dateAdded | reviewedDay3 | reviewedDay7
+// Images are stored as chunked rows in the SpacedMindImages tab.
 
 var SHEET = "SpacedMind";
+var IMAGE_SHEET = "SpacedMindImages";
+var CHUNK_SIZE = 45000;
 
 function sheet() {
   var ss = SpreadsheetApp.getActiveSpreadsheet();
   var s = ss.getSheetByName(SHEET);
   if (!s) {
     s = ss.insertSheet(SHEET);
-    s.getRange(1,1,1,7).setValues([["id","title","notes","images","dateAdded","reviewedDay3","reviewedDay7"]]);
+    s.getRange(1,1,1,7).setValues([["id","title","notes","imageCount","dateAdded","reviewedDay3","reviewedDay7"]]);
     s.getRange(1,1,1,7).setFontWeight("bold");
     s.setFrozenRows(1);
     s.setColumnWidth(3, 420);
-    s.setColumnWidth(4, 220);
-  } else {
-    var headers = s.getRange(1,1,1,Math.max(7, s.getLastColumn())).getValues()[0];
-    if (headers[3] !== "images") {
-      s.insertColumnAfter(3);
-      s.getRange(1,4).setValue("images");
-      s.setColumnWidth(4, 220);
-    }
+  }
+  return s;
+}
+
+function imageSheet() {
+  var ss = SpreadsheetApp.getActiveSpreadsheet();
+  var s = ss.getSheetByName(IMAGE_SHEET);
+  if (!s) {
+    s = ss.insertSheet(IMAGE_SHEET);
+    s.getRange(1,1,1,5).setValues([["conceptId","imageId","name","chunkIndex","chunk"]]);
+    s.getRange(1,1,1,5).setFontWeight("bold");
+    s.setFrozenRows(1);
+    s.setColumnWidth(5, 420);
   }
   return s;
 }
@@ -34,6 +42,58 @@ function ok(payload) {
   return ContentService.createTextOutput(JSON.stringify(payload)).setMimeType(ContentService.MimeType.JSON);
 }
 
+function normalImages(raw) {
+  if (!raw) return [];
+  if (Array.isArray(raw)) return raw;
+  try { return JSON.parse(String(raw)); } catch (e) { return []; }
+}
+
+function replaceImages(conceptId, rawImages) {
+  var s = imageSheet();
+  var last = s.getLastRow();
+  if (last > 1) {
+    var data = s.getRange(2,1,last-1,1).getValues();
+    for (var i = data.length - 1; i >= 0; i--) {
+      if (String(data[i][0]) === String(conceptId)) s.deleteRow(i + 2);
+    }
+  }
+  var images = normalImages(rawImages);
+  var rows = [];
+  for (var a = 0; a < images.length; a++) {
+    var img = images[a] || {};
+    var dataUrl = String(img.dataUrl || "");
+    var imageId = String(img.id || Utilities.getUuid());
+    var name = String(img.name || "image");
+    for (var start = 0, idx = 0; start < dataUrl.length; start += CHUNK_SIZE, idx++) {
+      rows.push([String(conceptId), imageId, name, idx, dataUrl.slice(start, start + CHUNK_SIZE)]);
+    }
+  }
+  if (rows.length) s.getRange(s.getLastRow()+1,1,rows.length,5).setValues(rows);
+  return images.length;
+}
+
+function readImagesByConcept() {
+  var s = imageSheet();
+  var last = s.getLastRow();
+  var map = {};
+  if (last <= 1) return map;
+  var rows = s.getRange(2,1,last-1,5).getValues();
+  var grouped = {};
+  for (var i = 0; i < rows.length; i++) {
+    var conceptId = String(rows[i][0]);
+    var imageId = String(rows[i][1]);
+    var key = conceptId + "::" + imageId;
+    if (!grouped[key]) grouped[key] = { conceptId: conceptId, id: imageId, name: String(rows[i][2]), chunks: [] };
+    grouped[key].chunks[Number(rows[i][3])] = String(rows[i][4]);
+  }
+  for (var k in grouped) {
+    var img = grouped[k];
+    if (!map[img.conceptId]) map[img.conceptId] = [];
+    map[img.conceptId].push({ id: img.id, name: img.name, dataUrl: img.chunks.join("") });
+  }
+  return map;
+}
+
 function doGet(e) {
   var action = e.parameter.action;
   if (action === "ping") return ok({status:"success"});
@@ -41,6 +101,7 @@ function doGet(e) {
     var s = sheet();
     var data = s.getDataRange().getValues();
     var headers = data[0];
+    var imageMap = readImagesByConcept();
     var rows = [];
     for (var i = 1; i < data.length; i++) {
       var row = {};
@@ -48,6 +109,7 @@ function doGet(e) {
         var value = data[i][j];
         row[headers[j]] = typeof value === "boolean" ? (value ? "TRUE" : "FALSE") : String(value);
       }
+      row.images = imageMap[String(row.id)] || [];
       rows.push(row);
     }
     return ok({status:"success", data: rows});
@@ -60,15 +122,17 @@ function doPost(e) {
     var p = JSON.parse(e.postData.contents);
     var s = sheet();
     if (p.action === "add") {
-      s.appendRow([String(p.id), String(p.title || ""), String(p.notes || ""), String(p.images || "[]"), String(p.dateAdded || ""), p.reviewedDay3 ? true : false, p.reviewedDay7 ? true : false]);
+      var imageCount = replaceImages(p.id, p.images);
+      s.appendRow([String(p.id), String(p.title || ""), String(p.notes || ""), imageCount, String(p.dateAdded || ""), p.reviewedDay3 ? true : false, p.reviewedDay7 ? true : false]);
       return ok({status:"success"});
     }
     if (p.action === "edit") {
       var r = findRow(s, p.id);
+      var count = replaceImages(p.id, p.images);
       if (r > 0) {
         s.getRange(r,2).setValue(String(p.title || ""));
         s.getRange(r,3).setValue(String(p.notes || ""));
-        s.getRange(r,4).setValue(String(p.images || "[]"));
+        s.getRange(r,4).setValue(count);
         s.getRange(r,5).setValue(String(p.dateAdded || ""));
         s.getRange(r,6).setValue(p.reviewedDay3 ? true : false);
         s.getRange(r,7).setValue(p.reviewedDay7 ? true : false);
@@ -76,6 +140,7 @@ function doPost(e) {
       return ok({status:"success"});
     }
     if (p.action === "delete") {
+      replaceImages(p.id, []);
       var rd = findRow(s, p.id);
       if (rd > 0) s.deleteRow(rd);
       return ok({status:"success"});
@@ -91,6 +156,9 @@ function doPost(e) {
     if (p.action === "clearAll") {
       var last = s.getLastRow();
       if (last > 1) s.deleteRows(2, last - 1);
+      var is = imageSheet();
+      var ilast = is.getLastRow();
+      if (ilast > 1) is.deleteRows(2, ilast - 1);
       return ok({status:"success"});
     }
     return ok({status:"error", message:"Unknown action"});

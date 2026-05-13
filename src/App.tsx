@@ -75,7 +75,22 @@ function readImageFiles(files: FileList | null): Promise<ImageAttachment[]> {
   const imageFiles = Array.from(files).filter(file => file.type.startsWith('image/'));
   return Promise.all(imageFiles.map(file => new Promise<ImageAttachment>((resolve, reject) => {
     const reader = new FileReader();
-    reader.onload = () => resolve({ id: crypto.randomUUID(), name: file.name, dataUrl: String(reader.result || '') });
+    reader.onload = () => {
+      const img = new Image();
+      img.onload = () => {
+        const maxSide = 1200;
+        const scale = Math.min(1, maxSide / Math.max(img.width, img.height));
+        const canvas = document.createElement('canvas');
+        canvas.width = Math.max(1, Math.round(img.width * scale));
+        canvas.height = Math.max(1, Math.round(img.height * scale));
+        const ctx = canvas.getContext('2d');
+        if (!ctx) return resolve({ id: crypto.randomUUID(), name: file.name, dataUrl: String(reader.result || '') });
+        ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+        resolve({ id: crypto.randomUUID(), name: file.name, dataUrl: canvas.toDataURL('image/jpeg', 0.78) });
+      };
+      img.onerror = () => resolve({ id: crypto.randomUUID(), name: file.name, dataUrl: String(reader.result || '') });
+      img.src = String(reader.result || '');
+    };
     reader.onerror = () => reject(reader.error);
     reader.readAsDataURL(file);
   })));
@@ -671,7 +686,33 @@ function LibraryPage({ items, edit, remove, onBack }: { items: Concept[]; edit: 
 }
 
 function SettingsPage({ backend, syncing, error, onBack, onSync, onSetup, onDisconnect }: { backend: string; syncing: boolean; error: string | null; onBack: () => void; onSync: () => void; onSetup: () => void; onDisconnect: () => void }) {
-  return <div className="min-h-screen bg-gradient-to-br from-slate-50 via-white to-indigo-50"><header className="border-b border-gray-200 bg-white"><div className="mx-auto flex max-w-3xl items-center gap-3 px-4 py-3"><button onClick={onBack} className="rounded-xl p-2 hover:bg-gray-100"><ArrowLeft className="h-5 w-5" /></button><h1 className="font-extrabold text-gray-800">Settings</h1></div></header><main className="mx-auto max-w-3xl px-4 py-6"><div className="rounded-3xl border border-gray-200 bg-white p-5 shadow-sm"><div className="flex items-center gap-3"><div className={`rounded-2xl p-3 ${backend === 'sheets' ? 'bg-green-50 text-green-600' : 'bg-gray-50 text-gray-500'}`}>{backend === 'sheets' ? <Cloud className="h-6 w-6" /> : <HardDrive className="h-6 w-6" />}</div><div><p className="font-extrabold text-gray-800">{backend === 'sheets' ? 'Google Sheets connected' : 'Local storage mode'}</p><p className="break-all text-sm text-gray-500">{backend === 'sheets' ? getUrl() : 'Data is saved only in this browser.'}</p></div></div>{error && <div className="mt-4 rounded-2xl bg-red-50 p-3 text-sm text-red-600"><AlertCircle className="mr-2 inline h-4 w-4" />{error}</div>}<div className="mt-5 flex flex-col gap-2 sm:flex-row">{backend === 'sheets' ? <><button onClick={onSync} className="flex flex-1 items-center justify-center gap-2 rounded-2xl bg-indigo-600 px-5 py-3 text-sm font-bold text-white hover:bg-indigo-700"><RefreshCw className={`h-4 w-4 ${syncing ? 'animate-spin' : ''}`} />Sync Now</button><button onClick={onDisconnect} className="flex-1 rounded-2xl bg-red-50 px-5 py-3 text-sm font-bold text-red-600 hover:bg-red-100">Disconnect</button></> : <button onClick={onSetup} className="flex-1 rounded-2xl bg-green-600 px-5 py-3 text-sm font-bold text-white hover:bg-green-700">Connect Google Sheets</button>}</div><p className="mt-4 text-xs text-gray-400">When connected, the app auto-syncs every 5 seconds.</p></div></main></div>;
+  return (
+    <div className="min-h-screen bg-gradient-to-br from-slate-50 via-white to-indigo-50">
+      <header className="border-b border-gray-200 bg-white">
+        <div className="mx-auto flex max-w-3xl items-center gap-3 px-4 py-3">
+          <button onClick={onBack} className="rounded-xl p-2 hover:bg-gray-100"><ArrowLeft className="h-5 w-5" /></button>
+          <h1 className="font-extrabold text-gray-800">Settings</h1>
+        </div>
+      </header>
+      <main className="mx-auto max-w-3xl px-4 py-6">
+        <div className="rounded-3xl border border-gray-200 bg-white p-5 shadow-sm">
+          <div className="flex items-center gap-3">
+            <div className={`rounded-2xl p-3 ${backend === 'sheets' ? 'bg-green-50 text-green-600' : 'bg-gray-50 text-gray-500'}`}>{backend === 'sheets' ? <Cloud className="h-6 w-6" /> : <HardDrive className="h-6 w-6" />}</div>
+            <div>
+              <p className="font-extrabold text-gray-800">{backend === 'sheets' ? 'Google Sheets connected' : 'Local storage mode'}</p>
+              <p className="break-all text-sm text-gray-500">{backend === 'sheets' ? getUrl() : 'Data is saved only in this browser.'}</p>
+            </div>
+          </div>
+          {error && <div className="mt-4 rounded-2xl bg-red-50 p-3 text-sm text-red-600"><AlertCircle className="mr-2 inline h-4 w-4" />{error}</div>}
+          <div className="mt-5 flex flex-col gap-2 sm:flex-row">
+            {backend === 'sheets' ? <><button onClick={onSync} className="flex flex-1 items-center justify-center gap-2 rounded-2xl bg-indigo-600 px-5 py-3 text-sm font-bold text-white hover:bg-indigo-700"><RefreshCw className={`h-4 w-4 ${syncing ? 'animate-spin' : ''}`} />Sync Now</button><button onClick={onDisconnect} className="flex-1 rounded-2xl bg-red-50 px-5 py-3 text-sm font-bold text-red-600 hover:bg-red-100">Disconnect</button></> : <button onClick={onSetup} className="flex-1 rounded-2xl bg-green-600 px-5 py-3 text-sm font-bold text-white hover:bg-green-700">Connect Google Sheets</button>}
+          </div>
+          <p className="mt-4 text-xs text-gray-400">When connected, the app auto-syncs every 5 seconds.</p>
+          <button onClick={() => { localStorage.removeItem(AUTH_SESSION_KEY); window.location.reload(); }} className="mt-4 w-full rounded-2xl bg-slate-900 px-5 py-3 text-sm font-bold text-white hover:bg-slate-800">Log out</button>
+        </div>
+      </main>
+    </div>
+  );
 }
 
 function SetupPage({ onBack, onConnect }: { onBack: () => void; onConnect: (url: string) => Promise<void> }) {
@@ -684,10 +725,86 @@ function SetupPage({ onBack, onConnect }: { onBack: () => void; onConnect: (url:
   return <div className="min-h-screen bg-gradient-to-br from-slate-50 via-white to-indigo-50"><header className="border-b border-gray-200 bg-white"><div className="mx-auto flex max-w-4xl items-center gap-3 px-4 py-3"><button onClick={onBack} className="rounded-xl p-2 hover:bg-gray-100"><ArrowLeft className="h-5 w-5" /></button><h1 className="font-extrabold text-gray-800">Google Sheets Setup</h1></div></header><main className="mx-auto max-w-4xl space-y-4 px-4 py-6"><div className="rounded-3xl bg-white p-5 shadow-sm"><h2 className="font-bold text-gray-800">1. Paste this in Apps Script</h2><p className="mt-1 text-sm text-gray-500">Google Sheet → Extensions → Apps Script → delete old code → paste below → save.</p><button onClick={copy} className="mt-4 flex w-full items-center justify-center gap-2 rounded-2xl bg-gray-900 px-5 py-3 text-sm font-bold text-white"><Clipboard className="h-4 w-4" />{copied ? 'Copied!' : 'Copy Code.gs'}</button><pre className="mt-3 max-h-72 overflow-auto rounded-2xl bg-gray-950 p-4 text-xs text-gray-200">{APPS_SCRIPT}</pre></div><div className="rounded-3xl bg-white p-5 shadow-sm"><h2 className="font-bold text-gray-800">2. Deploy and paste URL</h2><p className="mt-1 text-sm text-gray-500">Deploy → New deployment → Web app → Who has access: Anyone.</p><input value={url} onChange={event => { setUrl(event.target.value); setOk(null); }} placeholder="https://script.google.com/macros/s/.../exec" className="mt-4 w-full rounded-2xl border border-gray-200 bg-gray-50 px-4 py-3 text-sm outline-none focus:ring-2 focus:ring-indigo-500" /><div className="mt-3 flex gap-2"><button onClick={test} disabled={!url.trim() || testing} className="flex-1 rounded-2xl bg-gray-100 px-5 py-3 text-sm font-bold text-gray-700 hover:bg-gray-200 disabled:text-gray-300">{testing ? 'Testing...' : 'Test'}</button><button onClick={() => onConnect(url.trim())} disabled={!url.trim() || ok !== true} className="flex-1 rounded-2xl bg-green-600 px-5 py-3 text-sm font-bold text-white hover:bg-green-700 disabled:bg-gray-300">Connect</button></div>{ok === true && <p className="mt-3 text-sm font-bold text-green-600">Connected successfully.</p>}{ok === false && <p className="mt-3 text-sm font-bold text-red-600">Connection failed. Check deployment access.</p>}</div></main></div>;
 }
 
+type AuthAccount = { username: string; password: string; sheetUrl: string };
+const AUTH_USERS_KEY = 'spacedmind-auth-users';
+const AUTH_SESSION_KEY = 'spacedmind-auth-session';
+
+function loadAccounts(): AuthAccount[] {
+  try { return JSON.parse(localStorage.getItem(AUTH_USERS_KEY) || '[]') as AuthAccount[]; }
+  catch { return []; }
+}
+
+function saveAccounts(accounts: AuthAccount[]) {
+  localStorage.setItem(AUTH_USERS_KEY, JSON.stringify(accounts));
+}
+
+function AuthPage({ onAuthenticated }: { onAuthenticated: (sheetUrl: string) => Promise<void> }) {
+  const [mode, setMode] = useState<'login' | 'signup'>('login');
+  const [username, setUsername] = useState('');
+  const [password, setPassword] = useState('');
+  const [sheetUrl, setSheetUrl] = useState('');
+  const [error, setError] = useState('');
+  const [busy, setBusy] = useState(false);
+
+  const submit = async (event: React.FormEvent) => {
+    event.preventDefault();
+    setError('');
+    if (!username.trim() || !password.trim()) return setError('Enter username and password.');
+    const accounts = loadAccounts();
+    setBusy(true);
+    try {
+      if (mode === 'signup') {
+        if (!sheetUrl.trim().startsWith('https://script.google.com/')) throw new Error('Enter your Google Apps Script Web App URL.');
+        if (accounts.some(account => account.username === username.trim())) throw new Error('Username already exists. Please log in.');
+        const account = { username: username.trim(), password, sheetUrl: sheetUrl.trim() };
+        saveAccounts([...accounts, account]);
+        localStorage.setItem(AUTH_SESSION_KEY, account.username);
+        await onAuthenticated(account.sheetUrl);
+      } else {
+        const account = accounts.find(item => item.username === username.trim() && item.password === password);
+        if (!account) throw new Error('Invalid username or password.');
+        localStorage.setItem(AUTH_SESSION_KEY, account.username);
+        await onAuthenticated(account.sheetUrl);
+      }
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Authentication failed.');
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <div className="flex min-h-screen items-center justify-center bg-gradient-to-br from-slate-50 via-white to-indigo-50 p-4">
+      <div className="w-full max-w-md rounded-[2rem] border border-indigo-100 bg-white p-6 shadow-xl shadow-indigo-100/60">
+        <div className="mb-6 text-center">
+          <div className="mx-auto mb-3 flex h-14 w-14 items-center justify-center rounded-2xl bg-gradient-to-br from-indigo-600 to-violet-600 text-white"><Brain className="h-7 w-7" /></div>
+          <h1 className="text-2xl font-extrabold text-gray-900">SpacedMind</h1>
+          <p className="text-sm text-gray-500">{mode === 'signup' ? 'Create access for your Google Sheet' : 'Log in to continue'}</p>
+        </div>
+        <form onSubmit={submit} className="space-y-3">
+          <input value={username} onChange={event => setUsername(event.target.value)} placeholder="Username" className="w-full rounded-2xl border border-gray-200 bg-gray-50 px-4 py-3 text-sm outline-none focus:ring-2 focus:ring-indigo-500" />
+          <input type="password" value={password} onChange={event => setPassword(event.target.value)} placeholder="Password" className="w-full rounded-2xl border border-gray-200 bg-gray-50 px-4 py-3 text-sm outline-none focus:ring-2 focus:ring-indigo-500" />
+          {mode === 'signup' && <input value={sheetUrl} onChange={event => setSheetUrl(event.target.value)} placeholder="Google Sheets Web App URL" className="w-full rounded-2xl border border-gray-200 bg-gray-50 px-4 py-3 text-sm outline-none focus:ring-2 focus:ring-indigo-500" />}
+          {error && <p className="rounded-2xl bg-red-50 p-3 text-sm font-semibold text-red-600">{error}</p>}
+          <button disabled={busy} className="w-full rounded-2xl bg-indigo-600 px-5 py-3 text-sm font-extrabold text-white hover:bg-indigo-700 disabled:bg-gray-300">{busy ? 'Please wait...' : mode === 'signup' ? 'Sign Up' : 'Log In'}</button>
+        </form>
+        <button onClick={() => { setMode(mode === 'signup' ? 'login' : 'signup'); setError(''); }} className="mt-4 w-full text-sm font-bold text-indigo-600 hover:text-indigo-800">{mode === 'signup' ? 'Already have access? Log in' : 'New user? Sign up'}</button>
+        <p className="mt-4 text-center text-xs text-gray-400">This is local browser access control. Keep your device secure.</p>
+      </div>
+    </div>
+  );
+}
+
 export default function App() {
   const store = useConceptStore();
   const [page, setPage] = useState<Page>('dashboard');
+  const [authenticated, setAuthenticated] = useState(() => Boolean(localStorage.getItem(AUTH_SESSION_KEY)));
   const pending = store.items.filter(item => ['day3', 'day7'].includes(bucketOf(item))).length;
+
+  if (!authenticated) {
+    return <AuthPage onAuthenticated={async sheetUrl => { await store.connectSheets(sheetUrl); setAuthenticated(true); }} />;
+  }
+
   if (store.loading) return <div className="flex min-h-screen items-center justify-center bg-slate-50"><Loader2 className="h-8 w-8 animate-spin text-indigo-600" /></div>;
   if (page === 'library') return <LibraryPage items={store.items} edit={store.edit} remove={store.remove} onBack={() => setPage('dashboard')} />;
   if (page === 'settings') return <SettingsPage backend={store.backend} syncing={store.syncing} error={store.error} onBack={() => setPage('dashboard')} onSync={store.sync} onSetup={() => setPage('setup')} onDisconnect={store.disconnectSheets} />;
